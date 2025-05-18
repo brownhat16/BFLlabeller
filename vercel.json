@@ -5,8 +5,8 @@
       "src": "main.py",
       "use": "@vercel/python",
       "config": {
-        "pythonVersion": "3.10",  // Use 3.10 instead of 3.12
-        "installCommand": "pip install --no-cache-dir -r requirements.txt"  // Disable cache
+        "pythonVersion": "3.10",
+        "installCommand": "pip install --no-cache-dir -r requirements.txt"
       }
     }
   ],
