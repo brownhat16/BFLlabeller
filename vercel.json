@@ -5,7 +5,8 @@
       "src": "main.py",
       "use": "@vercel/python",
       "config": {
-        "pythonVersion": "3.10"
+        "pythonVersion": "3.10",
+        "installCommand": "pip install --no-cache-dir -r requirements.txt"
       }
     }
   ],
