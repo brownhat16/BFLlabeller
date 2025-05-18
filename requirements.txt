@@ -1,25 +1,12 @@
-# Core Libraries
-fastapi>=0.95.0
-uvicorn>=0.21.1
-pandas>=2.0.0
-numpy>=1.24.0
-
-# Type hints & Pydantic
-pydantic>=2.0.0
-
-# Logging & Environment
-loguru>=0.7.0
-python-dotenv>=1.0.0
-
-# Text Processing & Fuzzy Matching
-rapidfuzz>=3.7.0
-
-# API Client for Together Embeddings & LLMs
-together>=0.1.13
-
-# Caching
-diskcache>=5.6.1
-
-# FastAPI Docs / Testing
-starlette>=0.27.0
-pytest>=7.0.0
+fastapi==0.115.12
+uvicorn==0.34.2
+pandas==2.2.3
+numpy==1.26.4
+pydantic==2.11.4
+loguru==0.7.3
+python-dotenv==1.1.0
+rapidfuzz==3.13.0
+together==1.5.8
+diskcache==5.6.3
+starlette==0.46.2
+pytest==7.4.2  
