@@ -22,7 +22,6 @@ from together import Together
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, validator
-from main import app as fastapi_app
 
 # Load environment variables
 load_dotenv()
@@ -398,9 +397,6 @@ app = FastAPI(
     docs_url="/docs",
     redoc_url="/redoc",
 )
-
-# Include the original FastAPI app
-app.mount("/", fastapi_app)
 
 # Allow CORS
 app.add_middleware(
