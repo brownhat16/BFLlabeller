@@ -23,12 +23,16 @@ def predict_single(query):
             f"{API_BASE_URL}/predict",
             json={"query": query}
         )
+        # Only attempt to parse JSON if response is OK and has JSON content
         if response.status_code == 200:
-            return response.json()
+            try:
+                return response.json()
+            except ValueError:
+                return {"error": "Invalid JSON response from server", "raw_response": response.text}
         else:
-            return f"Prediction failed with status code {response.status_code}"
+            return {"error": f"Prediction failed with status code {response.status_code}", "raw_response": response.text}
     except Exception as e:
-        return f"Error: {str(e)}"
+        return {"error": str(e)}
 
 # Function to predict bulk labels
 def predict_bulk(queries):
@@ -38,11 +42,14 @@ def predict_bulk(queries):
             json={"queries": queries}
         )
         if response.status_code == 200:
-            return response.json()
+            try:
+                return response.json()
+            except ValueError:
+                return {"error": "Invalid JSON response from server", "raw_response": response.text}
         else:
-            return f"Bulk prediction failed with status code {response.status_code}"
+            return {"error": f"Bulk prediction failed with status code {response.status_code}", "raw_response": response.text}
     except Exception as e:
-        return f"Error: {str(e)}"
+        return {"error": str(e)}
 
 # Main Streamlit app
 def main():
