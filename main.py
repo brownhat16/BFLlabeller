@@ -23,7 +23,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, validator
 
 # Import the enhanced fuzzy matching implementation
-from improved_fuzzy_matching import (
+from main import (
     build_enhanced_vocab,
     enhanced_text_correction,
     apply_enhanced_correction
