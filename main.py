@@ -1,5 +1,5 @@
 """
-FastAPI Application with RAG-based Query Classification Pipeline
+FastAPI Application with RAG-based Query Classification Pipeline and Enhanced Word Completion
 """
 
 import os
@@ -17,11 +17,17 @@ import pandas as pd
 from diskcache import Cache
 from loguru import logger
 from dotenv import load_dotenv
-from rapidfuzz import process, utils
 from together import Together
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, validator
+
+# Import the enhanced fuzzy matching implementation
+from improved_fuzzy_matching import (
+    build_enhanced_vocab,
+    enhanced_text_correction,
+    apply_enhanced_correction
+)
 
 # Load environment variables
 load_dotenv()
@@ -30,7 +36,7 @@ load_dotenv()
 CACHE_DIR = "cache"
 EMBEDDING_CACHE_DIR = os.path.join(CACHE_DIR, "embeddings")
 DEFAULT_TOP_K = 5
-FUZZY_THRESHOLD = 90
+MIN_WORD_FREQ = 2
 
 os.makedirs(CACHE_DIR, exist_ok=True)
 os.makedirs(EMBEDDING_CACHE_DIR, exist_ok=True)
@@ -59,55 +65,6 @@ def clean_dataframe(df: pd.DataFrame, columns: Optional[List[str]] = None) -> pd
     for col in columns:
         if col in df.columns:
             df[col] = df[col].astype(str).apply(clean_text)
-    return df
-
-
-def build_vocab_from_column(df: pd.DataFrame, column: str, min_freq: int = 2) -> List[str]:
-    """Build a vocabulary list from a column based on minimum word frequency."""
-    word_counts = {}
-    for val in df[column].dropna().astype(str):
-        for word in val.split():
-            if len(word) > 1:
-                word_counts[word] = word_counts.get(word, 0) + 1
-    return [word for word, count in word_counts.items() if count >= min_freq]
-
-
-# -----------------------------
-# Fuzzy Correction Logic
-# -----------------------------
-
-
-@lru_cache(maxsize=10_000)
-def cached_fuzzy_match(token: str, vocab_key: str) -> str:
-    """Cached fuzzy match using RapidFuzz, returns original token if no match found."""
-    vocab = tuple(json.loads(vocab_key))
-    if len(token) <= 2:
-        return token
-    result = process.extractOne(
-        token, vocab, processor=utils.default_process, score_cutoff=FUZZY_THRESHOLD
-    )
-    if not result:
-        return token
-    match, score, _ = result
-    return match if score >= FUZZY_THRESHOLD else token
-
-
-def fuzzy_correct(text: str, vocab: List[str]) -> str:
-    """Correct spelling in text tokens using vocabulary."""
-    if not vocab:
-        return text
-    vocab_key = json.dumps(sorted(vocab))
-    corrected = [cached_fuzzy_match(token, vocab_key) for token in text.split()]
-    return " ".join(corrected)
-
-
-def apply_fuzzy_correction(df: pd.DataFrame, column: str, min_freq: int = 2) -> pd.DataFrame:
-    """Apply fuzzy correction to each row in a given column."""
-    vocab = build_vocab_from_column(df, column, min_freq=min_freq)
-    if not vocab:
-        logger.warning(f"Empty vocabulary for column '{column}'. Skipping fuzzy correction.")
-    df = df.copy()
-    df[column] = df[column].apply(lambda x: fuzzy_correct(x, vocab))
     return df
 
 
@@ -257,7 +214,8 @@ class RAGPipeline:
             reasoner: LLMBasedReasoner,
             query_col: str = "EP_SEARCH",
             label_col: str = "group",
-            top_k: int = DEFAULT_TOP_K
+            top_k: int = DEFAULT_TOP_K,
+            vocab: Optional[Dict[str, int]] = None
     ):
         self.df = df
         self.retriever = retriever
@@ -265,6 +223,9 @@ class RAGPipeline:
         self.query_col = query_col
         self.label_col = label_col
         self.top_k = top_k
+        
+        # Store vocabulary for text correction
+        self.vocab = vocab or build_enhanced_vocab(df, query_col, min_freq=MIN_WORD_FREQ)
 
         # Precompute all embeddings
         self.embeddings = self.retriever.batch_embed(df[self.query_col].fillna("").tolist())
@@ -301,10 +262,22 @@ class RAGPipeline:
         """Predict label for a query using retrieval-augmented generation."""
         start_time = time.time()
         cleaned_query = clean_text(query)
-        if not cleaned_query:
+        
+        # Apply enhanced correction with word completion
+        corrected_result = enhanced_text_correction(cleaned_query, self.vocab, include_metadata=True)
+        if isinstance(corrected_result, dict):
+            corrected_query = corrected_result["corrected_text"]
+            corrections = corrected_result["corrections"]
+        else:
+            corrected_query = corrected_result
+            corrections = []
+            
+        if not corrected_query:
             return {
                 "query": query,
                 "cleaned_query": "",
+                "corrected_query": "",
+                "word_corrections": [],
                 "predicted_label": None,
                 "similar_queries": [],
                 "confidence": 0.0,
@@ -312,11 +285,13 @@ class RAGPipeline:
                 "processing_time_ms": 0,
             }
 
-        similar = self.retrieve(cleaned_query)
+        similar = self.retrieve(corrected_query)
         if not similar:
             return {
                 "query": query,
                 "cleaned_query": cleaned_query,
+                "corrected_query": corrected_query,
+                "word_corrections": corrections,
                 "predicted_label": None,
                 "similar_queries": [],
                 "confidence": 0.0,
@@ -329,6 +304,8 @@ class RAGPipeline:
             return {
                 "query": query,
                 "cleaned_query": cleaned_query,
+                "corrected_query": corrected_query,
+                "word_corrections": corrections,
                 "predicted_label": best["label"],
                 "similar_queries": similar,
                 "confidence": best["similarity"],
@@ -336,11 +313,13 @@ class RAGPipeline:
                 "processing_time_ms": int((time.time() - start_time) * 1000),
             }
 
-        classification = self.reasoner.classify(cleaned_query,
-                                                [{"query": s["query"], "label": s["label"]} for s in similar])
+        classification = self.reasoner.classify(corrected_query,
+                                              [{"query": s["query"], "label": s["label"]} for s in similar])
         return {
             "query": query,
             "cleaned_query": cleaned_query,
+            "corrected_query": corrected_query,
+            "word_corrections": corrections,
             "predicted_label": classification["label"],
             "similar_queries": similar,
             "confidence": classification["confidence"],
@@ -368,6 +347,8 @@ class QueryInput(BaseModel):
 class PredictionOutput(BaseModel):
     query: str
     cleaned_query: str
+    corrected_query: str
+    word_corrections: List[Dict[str, Any]]
     predicted_label: Optional[str]
     similar_queries: List[Dict[str, Any]]
     confidence: float
@@ -392,8 +373,8 @@ class BulkQueryInput(BaseModel):
 
 app = FastAPI(
     title="RAG Query Labeler API",
-    description="API for classifying search queries using Retrieval-Augmented Generation",
-    version="2.0.0",
+    description="API for classifying search queries using Retrieval-Augmented Generation with enhanced word completion",
+    version="2.1.0",
     docs_url="/docs",
     redoc_url="/redoc",
 )
@@ -410,17 +391,25 @@ app.add_middleware(
 # Global state
 df = None
 pipeline = None
+vocabulary = None
 
 
 @app.on_event("startup")
 async def startup_event():
-    global df, pipeline
+    global df, pipeline, vocabulary
     try:
         logger.info("Starting up the application...")
         data_path = os.getenv("DATA_PATH", "labelled.csv")
         df = pd.read_csv(data_path)
         df = clean_dataframe(df, columns=["EP_SEARCH", "group"])
-        df = apply_fuzzy_correction(df, "EP_SEARCH", min_freq=2)
+        
+        # Build vocabulary from the cleaned data
+        vocabulary = build_enhanced_vocab(df, "EP_SEARCH", min_freq=MIN_WORD_FREQ)
+        logger.info(f"Built vocabulary with {len(vocabulary)} terms")
+        
+        # Apply the enhanced correction with word completion
+        df = apply_enhanced_correction(df, "EP_SEARCH", min_freq=MIN_WORD_FREQ)
+        logger.info("Applied enhanced text correction")
 
         api_key = os.getenv("TOGETHER_API_KEY")
         if not api_key:
@@ -428,7 +417,7 @@ async def startup_event():
 
         retriever = EmbeddingRetriever(api_key=api_key)
         reasoner = LLMBasedReasoner(api_key=api_key)
-        pipeline = RAGPipeline(df, retriever, reasoner)
+        pipeline = RAGPipeline(df, retriever, reasoner, vocab=vocabulary)
         logger.info("Pipeline initialized successfully.")
     except Exception as e:
         logger.error(f"Startup error: {str(e)}")
@@ -437,7 +426,7 @@ async def startup_event():
 
 @app.get("/health")
 async def health_check():
-    return {"status": "healthy"}
+    return {"status": "healthy", "vocab_size": len(vocabulary) if vocabulary else 0}
 
 
 @app.post("/predict", response_model=PredictionOutput)
@@ -457,6 +446,39 @@ async def predict_bulk(bulk_input: BulkQueryInput):
     except Exception as e:
         logger.error(f"Bulk prediction error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# Endpoint to view vocabulary and test word completion
+@app.get("/vocabulary", response_model=Dict[str, Any])
+async def get_vocabulary_stats():
+    if not vocabulary:
+        raise HTTPException(status_code=500, detail="Vocabulary not initialized")
+    
+    # Get top words by frequency
+    top_words = sorted(vocabulary.items(), key=lambda x: x[1], reverse=True)[:100]
+    
+    return {
+        "vocabulary_size": len(vocabulary),
+        "top_words": dict(top_words),
+    }
+
+
+@app.post("/test_completion")
+async def test_word_completion(query_input: QueryInput):
+    if not vocabulary:
+        raise HTTPException(status_code=500, detail="Vocabulary not initialized")
+    
+    original = query_input.query
+    cleaned = clean_text(original)
+    
+    # Test the completion algorithm
+    result = enhanced_text_correction(cleaned, vocabulary, include_metadata=True)
+    
+    return {
+        "original": original,
+        "cleaned": cleaned,
+        "result": result
+    }
 
 
 if __name__ == "__main__":
